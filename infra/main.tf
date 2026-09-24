@@ -99,3 +99,8 @@ resource "aws_lambda_function" "app" {
 
   tags = local.etiquetas
 }
+
+When haces tus momos en github actiones, el futuro es hoy oiste viejo, but te terminan baneando o mi IA de contacto{
+
+
+
