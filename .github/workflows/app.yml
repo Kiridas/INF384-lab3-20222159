@@ -180,44 +180,103 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           jq -r '.results[] | "::warning file=\(.path),line=\(.start.line),title=\(.check_id)::\(.extra.message | gsub("\n"; " "))"' semgrep.json
 
-  # TODO
-  # Construir la imagen de la aplicacion y publicarla en el registro privado.
-  #
-  # Depende de los cuatro jobs anteriores y corre solo desde la rama principal.
-  #
-  # La imagen se publica con tres tags independientes sobre el mismo manifiesto:
-  # el sha corto del commit, la version y el ambiente.
-  #
-  #   - El sha es el tag con el que se publica. Nace del commit, siempre
-  #     existe y no se reasigna nunca.
-  #   - La version identifica el artefacto para las personas y tampoco se
-  #     reasigna.
-  #   - El de ambiente se reasigna en cada publicacion y siempre apunta a lo
-  #     ultimo publicado para ese ambiente.
-  #
-  # Los dos ultimos se apuntan al manifiesto ya publicado. Agregar un tag a
-  # una imagen publicada no reenvia capas.
-  #
-  # La construccion es para linux/amd64 y declara el label
-  # org.opencontainers.image.title con el nombre de la aplicacion.
-  #
-  # Condicion de detencion: cualquier fallo de construccion o de publicacion.
-  #
-  # El job desplegar consume la salida 'digest' de este job. El formato es
-  # <registro>/<aplicacion>@sha256:... Exponer solo el sha del digest, o
-  # nombrar la salida de otra manera, rompe el despliegue.
-  #
-  # outputs:
-  #   digest: # TODO
-  #
-  # Sustituir el paso centinela por la implementacion.
+  # ---------------------------------------------------------------------
+  # A3 · Build y publicacion de la imagen
+  # Depende de las cuatro compuertas y corre solo desde la rama principal.
+  # Dos tags independientes sobre el mismo manifiesto:
+  #   - <sha7>: inmutable, nace del commit. Con este se publica.
+  #   - prd:    movil, se reasigna en cada publicacion.
+  # El despliegue va siempre por digest.
+  # ---------------------------------------------------------------------
   publicar:
+    needs: [calidad, secretos, dependencias, estatico]
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      APLICACION: inf384-lab3
+      AMBIENTE: prd
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
-      - name: Sin implementar
+      - uses: actions/checkout@v4
+
+      - name: Credenciales temporales
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Entrar al registro
+        id: registro
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Construir y publicar con el tag del commit
+        env:
+          REGISTRO: ${{ steps.registro.outputs.registry }}
         run: |
-          echo "::error::El job 'publicar' no esta implementado."
-          exit 1
+          sha="${GITHUB_SHA:0:7}"
+          imagen="${REGISTRO}/${APLICACION}:${sha}"
+          docker build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --label "org.opencontainers.image.title=${APLICACION}" \
+            --tag "$imagen" \
+            .
+          docker push "$imagen"
+
+      # Se lee de ECR el digest del manifiesto recien publicado y se entrega
+      # completo: <registro>/<aplicacion>@sha256:...
+      - name: Leer el digest
+        id: digest
+        env:
+          REGISTRO: ${{ steps.registro.outputs.registry }}
+        run: |
+          sha="${GITHUB_SHA:0:7}"
+          resumen="$(aws ecr describe-images \
+            --repository-name "$APLICACION" \
+            --image-ids "imageTag=${sha}" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+          echo "digest=${REGISTRO}/${APLICACION}@${resumen}" >> "$GITHUB_OUTPUT"
+
+      # El tag de ambiente se apunta al manifiesto ya publicado: no reenvia
+      # capas. Si prd ya apunta a este mismo manifiesto, ECR responde
+      # ImageAlreadyExistsException y no hay nada que hacer.
+      - name: Reasignar el tag de ambiente
+        run: |
+          sha="${GITHUB_SHA:0:7}"
+          manifiesto="$(aws ecr batch-get-image \
+            --repository-name "$APLICACION" \
+            --image-ids "imageTag=${sha}" \
+            --query 'images[0].imageManifest' --output text)"
+          tipo="$(aws ecr batch-get-image \
+            --repository-name "$APLICACION" \
+            --image-ids "imageTag=${sha}" \
+            --query 'images[0].imageManifestMediaType' --output text)"
+          if ! salida="$(aws ecr put-image \
+                --repository-name "$APLICACION" \
+                --image-tag "$AMBIENTE" \
+                --image-manifest "$manifiesto" \
+                --image-manifest-media-type "$tipo" 2>&1)"; then
+            if echo "$salida" | grep -q 'ImageAlreadyExistsException'; then
+              echo "El tag ${AMBIENTE} ya apunta a este manifiesto."
+            else
+              echo "$salida" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Resumen de la publicacion
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          {
+            echo '## Imagen publicada'
+            echo
+            echo "- Tags: \`${GITHUB_SHA:0:7}\` (inmutable) y \`${AMBIENTE}\` (movil)"
+            echo "- Digest: \`${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Este job viene completo y no se modifica.
   # Las estrategias de despliegue y la verificacion posterior son contenido
