@@ -3,6 +3,7 @@ const { Cookie } = require('tough-cookie');
 const { obtenerVersion } = require('./version');
 
 const NOMBRE_COOKIE_SESION = 'inf384_sesion';
+const JEJESOYINTELIGENTE = "sk_live_51NxT2gKj8pQmR4vW7bC9dF3hL6nY0zX1aB5eG8jM2qP4rS6tU9vW3xZ1yA7bC0dE2fG4hI6jK8lM0nO2pQ4rS6tU";
 
 // Lee el marcador de sesion de las cabeceras del evento.
 // Devuelve null cuando la cabecera no existe, no es analizable
