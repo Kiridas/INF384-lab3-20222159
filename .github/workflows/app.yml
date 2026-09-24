@@ -56,85 +56,129 @@ jobs:
           path: coverage/
           if-no-files-found: error
 
-  # TODO
-  # Publicar el analisis de calidad y la cobertura en SonarQube Cloud, como
-  # en el Laboratorio 2.
-  #
-  # La configuracion del analisis viene resuelta en sonar-project.properties
-  # y no hay que editarla. Lo que falta es el ensamblaje: las credenciales,
-  # la cobertura y el analisis del historial.
-  #
-  # El reporte de cobertura lo produce el job pruebas.
-  # El analisis necesita el historial completo del repositorio para saber
-  # que es codigo nuevo.
-  #
-  # Esta compuerta no detiene el pipeline: el resultado queda en SonarQube
-  # Cloud y se lee ahi.
-  #
-  # Sustituir el paso centinela por la implementacion.
+  # ---------------------------------------------------------------------
+  # A2 · Compuertas de calidad y seguridad
+  # Las cuatro corren en paralelo. Solo `secretos` detiene el pipeline.
+  # ---------------------------------------------------------------------
+
+  # Calidad y cobertura en SonarQube Cloud. No detiene: el resultado se lee
+  # en Sonar. Consume el reporte de cobertura que produce el job pruebas.
   calidad:
+    needs: pruebas
     runs-on: ubuntu-latest
     steps:
-      - name: Sin implementar
-        run: |
-          echo "::error::El job 'calidad' no esta implementado."
-          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # historial completo: Sonar distingue el codigo nuevo
 
-  # TODO
-  # Buscar credenciales escritas en el codigo y en el historial del repositorio.
-  # El alcance incluye el historial completo, no solo el ultimo commit.
-  #
-  # Condicion de detencion: cualquier hallazgo. Esta es la unica compuerta
-  # de este pipeline que detiene.
-  #
-  # Una credencial no se exceptua. Se retira del codigo, se retira del
-  # historial y se rota en el origen. Silenciar el hallazgo deja la credencial
-  # viva y ademas apaga el control para la proxima.
-  #
-  # Sustituir el paso centinela por la implementacion.
+      - name: Descargar el reporte de cobertura
+        uses: actions/download-artifact@v4
+        with:
+          name: cobertura
+          path: coverage
+
+      - name: Analisis en SonarQube Cloud
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORG }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+
+      - name: Enlace al resultado
+        run: |
+          {
+            echo '## Calidad (SonarQube Cloud)'
+            echo
+            echo "Resultado y cobertura: https://sonarcloud.io/project/overview?id=${{ vars.SONAR_PROJECT_KEY }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Credenciales en el codigo y en el historial. Es la unica que detiene.
   secretos:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      - name: Sin implementar
-        run: |
-          echo "::error::El job 'secretos' no esta implementado."
-          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # historial completo
 
-  # TODO
-  # Contrastar el arbol de dependencias declarado en package-lock.json contra
-  # vulnerabilidades conocidas.
-  #
-  # El alcance es el arbol completo, no solo las dependencias de produccion.
-  # El repositorio arrastra un hallazgo que solo aparece si el alcance es el
-  # correcto: si el informe trae uno solo, el alcance esta mal.
-  #
-  # Esta compuerta no detiene el pipeline. El hallazgo no cuelga de ninguna
-  # linea de codigo: la anotacion, si se decide no corregir, va en el paso
-  # que lo detecta.
-  #
-  # Sustituir el paso centinela por la implementacion.
+      - name: Detectar secretos (Gitleaks)
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_SUMMARY: 'true'
+
+  # Vulnerabilidades del arbol completo de package-lock.json (con las
+  # dependencias de desarrollo). No detiene: el informe queda en el resumen.
   dependencias:
     runs-on: ubuntu-latest
     steps:
-      - name: Sin implementar
-        run: |
-          echo "::error::El job 'dependencias' no esta implementado."
-          exit 1
+      - uses: actions/checkout@v4
 
-  # TODO
-  # Buscar patrones explotables en el codigo fuente.
-  #
-  # Esta compuerta no detiene el pipeline. El hallazgo cuelga de una linea
-  # concreta: la anotacion, si se decide no corregir, va junto a esa linea.
-  #
-  # Sustituir el paso centinela por la implementacion.
+      - name: Analizar package-lock.json (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_INCLUDE_DEV_DEPS: 'true'   # arbol completo, no solo produccion
+        with:
+          scan-type: fs
+          scan-ref: package-lock.json
+          scanners: vuln
+          format: table
+          output: trivy-dependencias.txt
+          exit-code: '0'
+
+      - name: Publicar el informe en el resumen
+        if: always()
+        run: |
+          {
+            echo '## Dependencias (Trivy, arbol completo)'
+            echo
+            echo '```'
+            head -c 60000 trivy-dependencias.txt 2>/dev/null || echo 'Sin informe.'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Patrones explotables en el codigo fuente. No detiene: cada hallazgo se
+  # publica como anotacion sobre su linea y en el resumen.
   estatico:
     runs-on: ubuntu-latest
     steps:
-      - name: Sin implementar
+      - uses: actions/checkout@v4
+
+      - name: Analizar el codigo fuente (Semgrep)
         run: |
-          echo "::error::El job 'estatico' no esta implementado."
-          exit 1
+          docker run --rm \
+            --volume "${PWD}:/src" \
+            --workdir /src \
+            --env SEMGREP_SEND_METRICS=off \
+            semgrep/semgrep \
+            semgrep scan \
+            --config=p/default \
+            --config=p/javascript \
+            --json --quiet \
+            --output=semgrep.json \
+            src/
+
+      - name: Publicar los hallazgos
+        if: always()
+        run: |
+          total="$(jq '.results | length' semgrep.json)"
+          {
+            echo '## Analisis estatico (Semgrep)'
+            echo
+            echo "Hallazgos: ${total}"
+            echo
+            if [ "$total" -gt 0 ]; then
+              echo '| Severidad | Ubicacion | Regla |'
+              echo '|---|---|---|'
+              jq -r '.results[] | "| \(.extra.severity) | `\(.path):\(.start.line)` | \(.check_id) |"' semgrep.json
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.results[] | "::warning file=\(.path),line=\(.start.line),title=\(.check_id)::\(.extra.message | gsub("\n"; " "))"' semgrep.json
 
   # TODO
   # Construir la imagen de la aplicacion y publicarla en el registro privado.
