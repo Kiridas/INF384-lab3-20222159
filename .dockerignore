@@ -1,0 +1,20 @@
+# El contexto de construccion solo necesita package*.json y src/.
+.git
+.github
+infra
+test
+coverage
+dist
+node_modules
+*.md
+*.tfstate
+*.tfstate.*
+tfplan
+tfplan.json
+.env
+.env.*
+Dockerfile
+.dockerignore
+.dockerignore.ejemplo
+jest.config.js
+sonar-project.properties
