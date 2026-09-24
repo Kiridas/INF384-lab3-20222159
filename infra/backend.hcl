@@ -1,0 +1,13 @@
+# Copiar este archivo como infra/backend.hcl y reemplazar el marcador.
+#
+#   terraform init -backend-config=backend.hcl
+#
+# El workflow setup-infra imprime este contenido ya resuelto, con el nombre
+# real del bucket, en el resumen de su ejecucion.
+#
+# backend.hcl si se versiona: el pipeline de infraestructura lo lee en el
+# runner. El nombre de un bucket no es un secreto.
+
+bucket = "inf384-tfstate-20222159"
+key    = "lab3/terraform.tfstate"
+region = "us-east-1"
